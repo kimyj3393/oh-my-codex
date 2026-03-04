@@ -143,6 +143,10 @@ export function getPhaseAgents(phase: TeamPhase): string[] {
       return ['verifier', 'quality-reviewer', 'security-reviewer'];
     case 'team-fix':
       return ['executor', 'build-fixer', 'debugger'];
+    default: {
+      const _exhaustive: never = phase;
+      throw new Error(`Unknown team phase: ${_exhaustive}`);
+    }
   }
 }
 
@@ -161,5 +165,9 @@ export function getPhaseInstructions(phase: TeamPhase): string {
       return 'PHASE: Verification. Use /verifier for evidence collection, /quality-reviewer for review. Output: pass/fail with evidence.';
     case 'team-fix':
       return 'PHASE: Fixing. Use /debugger for root cause, /executor for fixes. Output: fixed code, re-verify needed.';
+    default: {
+      const _exhaustive: never = phase;
+      throw new Error(`Unknown team phase: ${_exhaustive}`);
+    }
   }
 }

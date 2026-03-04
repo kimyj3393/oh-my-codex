@@ -5,7 +5,7 @@
 import { existsSync } from 'fs';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import {
   codexHome, codexConfigPath, codexPromptsDir,
   userSkillsDir, omxStateDir,
@@ -383,7 +383,7 @@ function listTeamTmuxSessions(): Set<string> | null {
 
 function checkCodexCli(): Check {
   try {
-    const version = execSync('codex --version 2>/dev/null', { encoding: 'utf-8' }).trim();
+    const version = execFileSync('codex', ['--version'], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     return { name: 'Codex CLI', status: 'pass', message: `installed (${version})` };
   } catch {
     return { name: 'Codex CLI', status: 'fail', message: 'not found - install from https://github.com/openai/codex' };

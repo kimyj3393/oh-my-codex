@@ -108,6 +108,7 @@ function normalizePaneId(value: string | null | undefined): string | null {
 
 async function listLiveSessionPaneIds(sessionName: string): Promise<string[]> {
   if (!sessionName || !sessionName.trim()) return [];
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionName.trim())) return [];
   return await new Promise((resolve) => {
     const child = spawn('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id}'], {
       stdio: ['ignore', 'pipe', 'ignore'],

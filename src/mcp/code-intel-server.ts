@@ -182,7 +182,7 @@ async function findSgBinary(): Promise<string | null> {
   }
   // Try npx
   try {
-    await execFileAsync('npx', ['--yes', '@ast-grep/cli', '--version'], { timeout: 15000 });
+    await execFileAsync('npx', ['@ast-grep/cli', '--version'], { timeout: 15000 });
     return 'npx-ast-grep';
   } catch { /* not available */ }
   return null;
