@@ -1,6 +1,6 @@
 {
   "name": "oh-my-codex",
-  "version": "0.8.11",
+  "version": "0.8.12",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "type": "module",
   "main": "dist/index.js",
