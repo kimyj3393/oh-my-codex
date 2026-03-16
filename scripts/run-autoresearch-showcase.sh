@@ -12,7 +12,8 @@ Available showcases:
   ml-tabular     -> missions/ml-kaggle-model-optimization
   bayesopt       -> missions/noisy-bayesopt-highdim
   latent         -> missions/noisy-latent-subspace-discovery
-  all            -> omx-self ml-tabular bayesopt latent
+  sorting        -> missions/adaptive-sort-optimization
+  all            -> omx-self ml-tabular bayesopt latent sorting
 
 Examples:
   scripts/run-autoresearch-showcase.sh --list
@@ -27,6 +28,7 @@ mission_for() {
     ml-tabular) printf '%s' 'missions/ml-kaggle-model-optimization' ;;
     bayesopt)   printf '%s' 'missions/noisy-bayesopt-highdim' ;;
     latent)     printf '%s' 'missions/noisy-latent-subspace-discovery' ;;
+    sorting)    printf '%s' 'missions/adaptive-sort-optimization' ;;
     *) return 1 ;;
   esac
 }
@@ -37,6 +39,7 @@ omx-self   missions/in-action-cat-shellout-demo
 ml-tabular missions/ml-kaggle-model-optimization
 bayesopt   missions/noisy-bayesopt-highdim
 latent     missions/noisy-latent-subspace-discovery
+sorting    missions/adaptive-sort-optimization
 LIST
 }
 
@@ -57,7 +60,7 @@ fi
 
 args=("$@")
 if [[ " ${args[*]} " == *" all "* ]]; then
-  args=(omx-self ml-tabular bayesopt latent)
+  args=(omx-self ml-tabular bayesopt latent sorting)
 fi
 
 for showcase in "${args[@]}"; do

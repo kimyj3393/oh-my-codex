@@ -357,6 +357,14 @@ Autoresearch showcase quick start:
 ./scripts/run-autoresearch-showcase.sh omx-self ml-tabular bayesopt
 ```
 
+Autoresearch showcase summary:
+
+- OMX self-optimization: removes a real OMX runtime shell-out via autoresearch
+- Tabular ML: improves deterministic classification AUC on a lightweight benchmark
+- Noisy Bayes-opt: improves a high-dimensional noisy black-box optimizer under fixed budget
+- Latent subspace discovery: solves a harder mixed-direction optimization task
+- Adaptive sorting: provides a deterministic algorithm-engineering benchmark over mixed input distributions
+
 `omx explore` is the default OMX surface for simple read-only exploration. It stays intentionally read-only and shell-only, and qualifying shell-native read-only tasks may be routed through `omx sparkshell` as a backend when that is the cheaper/more direct fit. The routing flag only adds advisory steering in generated session instructions; ambiguous or implementation-heavy requests stay on the normal Codex path, and OMX falls back normally if the explore harness is unavailable. The harness constrains Codex through a temporary allowlisted shell/bin layer so only approved repository-inspection command families are available during the offloaded run.
 
 - Current shell allowlist: `rg`, `grep`, `ls`, `find`, `wc`, `cat`, `head`, `tail`, `pwd`, `printf`

@@ -17,6 +17,7 @@ Design goals:
 | Kaggle-style tabular ML | `missions/ml-kaggle-model-optimization/` | `scripts/eval-ml-kaggle-model-optimization.py` | ✅ completed | ROC AUC improved from `0.9458071278825997` to `0.9976939203354298` |
 | Noisy high-dimensional Bayes-opt | `missions/noisy-bayesopt-highdim/` | `scripts/eval-noisy-bayesopt-highdim.py` | ✅ completed | score improved from `2.833048700169374` to `4.75978993804531` |
 | Latent subspace discovery | `missions/noisy-latent-subspace-discovery/` | `scripts/eval-noisy-latent-subspace-discovery.py` | ✅ completed | score improved from `3.7019658949006504` to `4.176124116152444` with a compact `cem_search` strategy |
+| Adaptive sorting optimization | `missions/adaptive-sort-optimization/` | `scripts/eval-adaptive-sort-optimization.py` | 🧪 scaffolded | deterministic weighted-cost sorting benchmark baseline established at `2.1198297352756628` |
 
 Use `scripts/run-autoresearch-showcase.sh --list` to see the bundled launch targets, or run one or more showcases directly with the wrapper script.
 
@@ -28,6 +29,7 @@ Use `scripts/run-autoresearch-showcase.sh --list` to see the bundled launch targ
 | Kaggle-style tabular ML | 0.9458071278825997 AUC | 0.9976939203354298 AUC | +0.0518867924528301 |
 | Noisy high-dimensional Bayes-opt | 2.833048700169374 | 4.75978993804531 | +1.926741237875936 |
 | Latent subspace discovery | 3.7019658949006504 | 4.176124116152444 | +0.47415822125179353 |
+| Adaptive sorting optimization | 2.1198297352756628 | not finalized | n/a |
 
 ## Showcase demos
 
@@ -54,6 +56,12 @@ Use `scripts/run-autoresearch-showcase.sh --list` to see the bundled launch targ
 - Evaluator: `scripts/eval-noisy-latent-subspace-discovery.py`
 - What it demonstrates: a follow-on harder variant where useful structure is mixed through latent directions rather than directly exposed as obvious coordinates.
 
+### 5. Adaptive sorting optimization demo
+- Demo code: `playground/adaptive_sort_demo/`
+- Mission: `missions/adaptive-sort-optimization/`
+- Evaluator: `scripts/eval-adaptive-sort-optimization.py`
+- What it demonstrates: algorithm-engineering optimization over a deterministic mixed-distribution sorting benchmark using weighted comparison/move cost rather than noisy wall-clock timing.
+
 ## How to run a showcase
 
 Example:
@@ -78,6 +86,7 @@ node scripts/eval-in-action-cat-shellout-demo.js
 python3 scripts/eval-ml-kaggle-model-optimization.py
 python3 scripts/eval-noisy-bayesopt-highdim.py
 python3 scripts/eval-noisy-latent-subspace-discovery.py
+python3 scripts/eval-adaptive-sort-optimization.py
 ```
 
 ## Repository hygiene
