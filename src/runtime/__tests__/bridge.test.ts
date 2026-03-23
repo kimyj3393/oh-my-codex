@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRuntimeBinaryPath } from '../bridge.js';
+import { clearBridgeCachesForTests, getDefaultBridge, resolveRuntimeBinaryPath } from '../bridge.js';
 
 describe('resolveRuntimeBinaryPath', () => {
   it('prefers explicit OMX_RUNTIME_BINARY override', () => {
@@ -48,5 +48,26 @@ describe('resolveRuntimeBinaryPath', () => {
       exists: () => false,
     });
     assert.equal(actual, 'omx-runtime');
+  });
+});
+
+describe('getDefaultBridge', () => {
+  it('caches bridge instances per state directory', () => {
+    clearBridgeCachesForTests();
+    const first = getDefaultBridge('/tmp/omx-state-a');
+    const second = getDefaultBridge('/tmp/omx-state-a');
+    const third = getDefaultBridge('/tmp/omx-state-b');
+
+    assert.equal(first, second);
+    assert.notEqual(first, third);
+  });
+
+  it('can reset cached bridge instances for tests', () => {
+    clearBridgeCachesForTests();
+    const first = getDefaultBridge('/tmp/omx-state-reset');
+    clearBridgeCachesForTests();
+    const second = getDefaultBridge('/tmp/omx-state-reset');
+
+    assert.notEqual(first, second);
   });
 });

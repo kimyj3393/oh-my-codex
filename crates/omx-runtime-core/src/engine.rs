@@ -18,6 +18,7 @@ pub enum EngineError {
     Mailbox(MailboxError),
     Io(std::io::Error),
     Json(serde_json::Error),
+    UnsupportedCommand(&'static str),
 }
 
 impl fmt::Display for EngineError {
@@ -28,6 +29,7 @@ impl fmt::Display for EngineError {
             Self::Mailbox(e) => write!(f, "mailbox error: {e}"),
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Json(e) => write!(f, "json error: {e}"),
+            Self::UnsupportedCommand(message) => write!(f, "{message}"),
         }
     }
 }
@@ -40,6 +42,7 @@ impl std::error::Error for EngineError {
             Self::Mailbox(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Json(e) => Some(e),
+            Self::UnsupportedCommand(_) => None,
         }
     }
 }
@@ -182,6 +185,11 @@ impl RuntimeEngine {
             RuntimeCommand::MarkMailboxDelivered { message_id } => {
                 self.mailbox.mark_delivered(&message_id)?;
                 RuntimeEvent::MailboxDelivered { message_id }
+            }
+            _ => {
+                return Err(EngineError::UnsupportedCommand(
+                    "team-state commands must be handled by the team-state executor",
+                ));
             }
         };
 
@@ -368,6 +376,7 @@ fn replay_event(engine: &mut RuntimeEngine, event: &RuntimeEvent) {
         RuntimeEvent::MailboxDelivered { message_id } => {
             let _ = engine.mailbox.mark_delivered(message_id);
         }
+        _ => {}
     }
 }
 

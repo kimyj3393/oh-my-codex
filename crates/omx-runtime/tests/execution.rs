@@ -210,3 +210,86 @@ fn snapshot_from_state_dir_reads_persisted_state() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn exec_team_state_phase_commands_round_trip() {
+    let root = std::env::temp_dir().join("omx-runtime-test-team-phase");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let write_json = serde_json::json!({
+        "command": "WriteTeamPhase",
+        "state_root": root.display().to_string(),
+        "team_name": "team-1",
+        "phase_json": r#"{"current_phase":"team-exec","max_fix_attempts":3,"current_fix_attempt":0,"transitions":[],"updated_at":"2026-03-23T00:00:00.000Z"}"#,
+    })
+    .to_string();
+    let write_output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["exec", &write_json])
+        .output()
+        .expect("ran omx-runtime");
+    assert!(write_output.status.success());
+
+    let read_json = serde_json::json!({
+        "command": "ReadTeamPhase",
+        "state_root": root.display().to_string(),
+        "team_name": "team-1",
+    })
+    .to_string();
+    let read_output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["exec", &read_json])
+        .output()
+        .expect("ran omx-runtime");
+    assert!(read_output.status.success());
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&read_output.stdout).expect("valid JSON");
+    assert_eq!(parsed["event"], "TeamPhaseRead");
+    assert_eq!(parsed["phase"]["current_phase"], "team-exec");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn exec_team_state_task_listing_preserves_filtering_and_sorting() {
+    let root = std::env::temp_dir().join("omx-runtime-test-team-tasks");
+    let tasks_dir = root.join("team").join("team-1").join("tasks");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&tasks_dir).unwrap();
+    std::fs::write(
+        tasks_dir.join("task-10.json"),
+        r#"{"id":"10","subject":"b","description":"b","status":"pending","created_at":"2026-03-23T00:00:00.000Z"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tasks_dir.join("task-2.json"),
+        r#"{"id":"2","subject":"a","description":"a","status":"pending","created_at":"2026-03-23T00:00:00.000Z"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tasks_dir.join("task-3.json"),
+        r#"{"id":"999","subject":"bad","description":"bad","status":"pending","created_at":"2026-03-23T00:00:00.000Z"}"#,
+    )
+    .unwrap();
+    std::fs::write(tasks_dir.join("task-4.json"), r#"{"bad":true}"#).unwrap();
+
+    let cmd_json = format!(
+        "{{\"command\":\"ListTeamTasks\",\"state_root\":\"{}\",\"team_name\":\"team-1\"}}",
+        root.display()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["exec", &cmd_json])
+        .output()
+        .expect("ran omx-runtime");
+    assert!(output.status.success());
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert_eq!(parsed["event"], "TeamTasksListed");
+    let tasks = parsed["tasks"].as_array().expect("tasks array");
+    let ids: Vec<&str> = tasks
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["2", "10"]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

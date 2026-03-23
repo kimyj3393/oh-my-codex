@@ -3,6 +3,7 @@ import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { omxStateDir } from '../utils/paths.js';
+import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   computeTaskReadiness as computeTaskReadinessImpl,
@@ -35,9 +36,12 @@ import {
 import {
   writeTaskApproval as writeTaskApprovalImpl,
   readTaskApproval as readTaskApprovalImpl,
+  parseTaskApprovalContent,
 } from './state/approvals.js';
 import {
   getTeamSummary as getTeamSummaryImpl,
+  readSummarySnapshot as readSummarySnapshotImpl,
+  writeSummarySnapshot as writeSummarySnapshotImpl,
   readMonitorSnapshot as readMonitorSnapshotImpl,
   writeMonitorSnapshot as writeMonitorSnapshotImpl,
   readTeamPhase as readTeamPhaseImpl,
@@ -611,6 +615,201 @@ function summarySnapshotPath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'summary-snapshot.json');
 }
 
+function getTeamStateBridge(cwd: string) {
+  return getDefaultBridge(resolveTeamStateRoot(cwd));
+}
+
+function getTeamStateBridgeContext(teamName: string, cwd: string) {
+  return { stateRoot: resolveTeamStateRoot(cwd), teamName };
+}
+
+function parseBridgeObject(raw: unknown): Record<string, unknown> | null {
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+}
+
+function normalizeBridgeErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return 'unknown error';
+  return error.message.replace(/^omx-runtime exec failed:\s*/, '').trim();
+}
+
+function shouldPropagateBridgeLockError(error: unknown): boolean {
+  const message = normalizeBridgeErrorMessage(error);
+  return /Timed out acquiring|^Team .* not found$/.test(message);
+}
+
+function isBridgeLocksEnabled(): boolean {
+  return isBridgeEnabled() && process.env.OMX_RUNTIME_BRIDGE_LOCKS === '1';
+}
+
+async function appendTeamEventViaBridge(
+  teamName: string,
+  fullEvent: TeamEvent,
+  cwd: string,
+): Promise<boolean> {
+  if (!isBridgeEnabled()) return false;
+  try {
+    const context = getTeamStateBridgeContext(teamName, cwd);
+    getTeamStateBridge(cwd).appendTeamEvent(context, JSON.stringify(fullEvent));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function writeBridgeTeamFile(
+  command:
+    | 'WriteTeamWorkerIdentity'
+    | 'UpdateTeamWorkerHeartbeat'
+    | 'WriteTeamWorkerStatus'
+    | 'WriteTeamShutdownRequest'
+    | 'WriteTeamPhase'
+    | 'WriteTeamMonitorSnapshot'
+    | 'WriteTeamSummarySnapshot',
+  teamName: string,
+  cwd: string,
+  content: string,
+  extra: { worker_name?: string } = {},
+): Promise<boolean> {
+  if (!isBridgeEnabled()) return false;
+  try {
+    const bridge = getTeamStateBridge(cwd);
+    const context = getTeamStateBridgeContext(teamName, cwd);
+    switch (command) {
+      case 'WriteTeamWorkerIdentity':
+        if (!extra.worker_name) return false;
+        bridge.writeTeamWorkerIdentity(context, extra.worker_name, content);
+        break;
+      case 'UpdateTeamWorkerHeartbeat':
+        if (!extra.worker_name) return false;
+        bridge.updateTeamWorkerHeartbeat(context, extra.worker_name, content);
+        break;
+      case 'WriteTeamWorkerStatus':
+        if (!extra.worker_name) return false;
+        bridge.writeTeamWorkerStatus(context, extra.worker_name, content);
+        break;
+      case 'WriteTeamShutdownRequest':
+        if (!extra.worker_name) return false;
+        bridge.writeTeamShutdownRequest(context, extra.worker_name, content);
+        break;
+      case 'WriteTeamPhase':
+        bridge.writeTeamPhase(context, content);
+        break;
+      case 'WriteTeamMonitorSnapshot':
+        bridge.writeTeamMonitorSnapshot(context, content);
+        break;
+      case 'WriteTeamSummarySnapshot':
+        bridge.writeTeamSummarySnapshot(context, content);
+        break;
+      default:
+        return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readBridgeTeamObject(
+  command:
+    | 'ReadTeamWorkerHeartbeat'
+    | 'ReadTeamWorkerStatus'
+    | 'ReadTeamShutdownAck'
+    | 'ReadTeamPhase'
+    | 'ReadTeamTaskApproval'
+    | 'ReadTeamTask'
+    | 'ReadTeamMonitorSnapshot'
+    | 'ReadTeamSummarySnapshot',
+  teamName: string,
+  cwd: string,
+  extra: { worker_name?: string; task_id?: string } = {},
+): Promise<Record<string, unknown> | null | undefined> {
+  if (!isBridgeEnabled()) return undefined;
+  try {
+    const bridge = getTeamStateBridge(cwd);
+    const context = getTeamStateBridgeContext(teamName, cwd);
+    switch (command) {
+      case 'ReadTeamWorkerHeartbeat':
+        return parseBridgeObject(bridge.readTeamWorkerHeartbeat(context, extra.worker_name ?? ''));
+      case 'ReadTeamWorkerStatus':
+        return parseBridgeObject(bridge.readTeamWorkerStatus(context, extra.worker_name ?? ''));
+      case 'ReadTeamShutdownAck':
+        return parseBridgeObject(bridge.readTeamShutdownAck(context, extra.worker_name ?? ''));
+      case 'ReadTeamPhase':
+        return parseBridgeObject(bridge.readTeamPhase(context));
+      case 'ReadTeamTaskApproval':
+        return parseBridgeObject(bridge.readTeamTaskApproval(context, extra.task_id ?? ''));
+      case 'ReadTeamTask':
+        return parseBridgeObject(bridge.readTeamTask(context, extra.task_id ?? ''));
+      case 'ReadTeamMonitorSnapshot':
+        return parseBridgeObject(bridge.readTeamMonitorSnapshot(context));
+      case 'ReadTeamSummarySnapshot':
+        return parseBridgeObject(bridge.readTeamSummarySnapshot(context));
+      default:
+        return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeSummarySnapshotValue(raw: unknown): {
+  workerTurnCountByName: Record<string, number>;
+  workerTaskByName: Record<string, string>;
+} | null {
+  const parsed = parseBridgeObject(raw);
+  if (!parsed) return null;
+  return {
+    workerTurnCountByName: parseBridgeObject(parsed.workerTurnCountByName) as Record<string, number> ?? {},
+    workerTaskByName: parseBridgeObject(parsed.workerTaskByName) as Record<string, string> ?? {},
+  };
+}
+
+function normalizeMonitorSnapshotValue(raw: unknown): TeamMonitorSnapshotState | null {
+  const parsed = parseBridgeObject(raw);
+  if (!parsed) return null;
+  const timings = parseBridgeObject(parsed.monitorTimings);
+  const normalizedTimings = timings
+    && typeof timings.list_tasks_ms === 'number'
+    && typeof timings.worker_scan_ms === 'number'
+    && typeof timings.mailbox_delivery_ms === 'number'
+    && typeof timings.total_ms === 'number'
+    && typeof timings.updated_at === 'string'
+      ? {
+          list_tasks_ms: timings.list_tasks_ms,
+          worker_scan_ms: timings.worker_scan_ms,
+          mailbox_delivery_ms: timings.mailbox_delivery_ms,
+          total_ms: timings.total_ms,
+          updated_at: timings.updated_at,
+        }
+      : undefined;
+
+  return {
+    taskStatusById: parseBridgeObject(parsed.taskStatusById) as Record<string, string> ?? {},
+    workerAliveByName: parseBridgeObject(parsed.workerAliveByName) as Record<string, boolean> ?? {},
+    workerStateByName: parseBridgeObject(parsed.workerStateByName) as Record<string, string> ?? {},
+    workerTurnCountByName: parseBridgeObject(parsed.workerTurnCountByName) as Record<string, number> ?? {},
+    workerTaskIdByName: parseBridgeObject(parsed.workerTaskIdByName) as Record<string, string> ?? {},
+    mailboxNotifiedByMessageId: parseBridgeObject(parsed.mailboxNotifiedByMessageId) as Record<string, string> ?? {},
+    completedEventTaskIds: parseBridgeObject(parsed.completedEventTaskIds) as Record<string, boolean> ?? {},
+    integrationByWorker: parseBridgeObject(parsed.integrationByWorker) as Record<string, TeamWorkerIntegrationState> ?? {},
+    monitorTimings: normalizedTimings,
+  };
+}
+
+function normalizeTeamPhaseValue(raw: unknown): TeamPhaseState | null {
+  const parsed = parseBridgeObject(raw);
+  if (!parsed) return null;
+  return {
+    current_phase: typeof parsed.current_phase === 'string' ? parsed.current_phase as TeamPhase | TerminalPhase : 'team-exec',
+    max_fix_attempts: typeof parsed.max_fix_attempts === 'number' ? parsed.max_fix_attempts : 3,
+    current_fix_attempt: typeof parsed.current_fix_attempt === 'number' ? parsed.current_fix_attempt : 0,
+    transitions: Array.isArray(parsed.transitions)
+      ? parsed.transitions as Array<{ from: string; to: string; at: string; reason?: string }>
+      : [],
+    updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : new Date().toISOString(),
+  };
+}
+
 // Validate team name: alphanumeric + hyphens only, max 30 chars
 function validateTeamName(name: string): void {
   if (!TEAM_NAME_SAFE_PATTERN.test(name)) {
@@ -1062,6 +1261,14 @@ export async function writeWorkerIdentity(
   identity: WorkerInfo,
   cwd: string
 ): Promise<void> {
+  const bridged = await writeBridgeTeamFile(
+    'WriteTeamWorkerIdentity',
+    teamName,
+    cwd,
+    JSON.stringify(identity, null, 2),
+    { worker_name: workerName },
+  );
+  if (bridged) return;
   const p = join(workerDir(teamName, workerName, cwd), 'identity.json');
   await writeAtomic(p, JSON.stringify(identity, null, 2));
 }
@@ -1072,6 +1279,10 @@ export async function readWorkerHeartbeat(
   workerName: string,
   cwd: string
 ): Promise<WorkerHeartbeat | null> {
+  const bridged = await readBridgeTeamObject('ReadTeamWorkerHeartbeat', teamName, cwd, { worker_name: workerName });
+  if (bridged !== undefined) {
+    return isWorkerHeartbeat(bridged) ? bridged : null;
+  }
   const p = join(workerDir(teamName, workerName, cwd), 'heartbeat.json');
   try {
     const raw = await readFile(p, 'utf8');
@@ -1090,6 +1301,14 @@ export async function updateWorkerHeartbeat(
   heartbeat: WorkerHeartbeat,
   cwd: string
 ): Promise<void> {
+  const bridged = await writeBridgeTeamFile(
+    'UpdateTeamWorkerHeartbeat',
+    teamName,
+    cwd,
+    JSON.stringify(heartbeat, null, 2),
+    { worker_name: workerName },
+  );
+  if (bridged) return;
   const p = join(workerDir(teamName, workerName, cwd), 'heartbeat.json');
   await writeAtomic(p, JSON.stringify(heartbeat, null, 2));
 }
@@ -1097,6 +1316,10 @@ export async function updateWorkerHeartbeat(
 // Read worker status (returns {state:'unknown'} on missing/malformed)
 export async function readWorkerStatus(teamName: string, workerName: string, cwd: string): Promise<WorkerStatus> {
   const unknownStatus: WorkerStatus = { state: 'unknown', updated_at: '1970-01-01T00:00:00.000Z' };
+  const bridged = await readBridgeTeamObject('ReadTeamWorkerStatus', teamName, cwd, { worker_name: workerName });
+  if (bridged !== undefined) {
+    return isWorkerStatus(bridged) ? bridged : unknownStatus;
+  }
   const p = join(workerDir(teamName, workerName, cwd), 'status.json');
   try {
     const raw = await readFile(p, 'utf8');
@@ -1118,6 +1341,14 @@ export async function writeWorkerStatus(
   status: WorkerStatus,
   cwd: string
 ): Promise<void> {
+  const bridged = await writeBridgeTeamFile(
+    'WriteTeamWorkerStatus',
+    teamName,
+    cwd,
+    JSON.stringify(status, null, 2),
+    { worker_name: workerName },
+  );
+  if (bridged) return;
   const p = join(workerDir(teamName, workerName, cwd), 'status.json');
   await writeAtomic(p, JSON.stringify(status, null, 2));
 }
@@ -1128,6 +1359,26 @@ export async function withScalingLock<T>(
   cwd: string,
   fn: () => Promise<T>,
 ): Promise<T> {
+  if (isBridgeLocksEnabled()) {
+    try {
+      const bridge = getTeamStateBridge(cwd);
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      const ownerToken = bridge.acquireScalingLock(context, LOCK_STALE_MS);
+      try {
+        return await fn();
+      } finally {
+        try {
+          bridge.releaseScalingLock(context, ownerToken);
+        } catch {
+          // best-effort release
+        }
+      }
+    } catch (error) {
+      if (shouldPropagateBridgeLockError(error)) {
+        throw new Error(normalizeBridgeErrorMessage(error));
+      }
+    }
+  }
   return await withScalingLockImpl(teamName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
@@ -1138,6 +1389,15 @@ export async function writeWorkerInbox(
   prompt: string,
   cwd: string
 ): Promise<void> {
+  if (isBridgeEnabled()) {
+    try {
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      getTeamStateBridge(cwd).writeTeamWorkerInbox(context, workerName, prompt);
+      return;
+    } catch {
+      // fall through to TS write path
+    }
+  }
   const p = join(workerDir(teamName, workerName, cwd), 'inbox.md');
   await writeAtomic(p, prompt);
 }
@@ -1150,6 +1410,26 @@ function taskFilePath(teamName: string, taskId: string, cwd: string): string {
 }
 
 async function withTeamLock<T>(teamName: string, cwd: string, fn: () => Promise<T>): Promise<T> {
+  if (isBridgeLocksEnabled()) {
+    try {
+      const bridge = getTeamStateBridge(cwd);
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      const ownerToken = bridge.acquireTeamLock(context, LOCK_STALE_MS);
+      try {
+        return await fn();
+      } finally {
+        try {
+          bridge.releaseTeamLock(context, ownerToken);
+        } catch {
+          // best-effort release
+        }
+      }
+    } catch (error) {
+      if (shouldPropagateBridgeLockError(error)) {
+        throw new Error(normalizeBridgeErrorMessage(error));
+      }
+    }
+  }
   return await withTeamLockImpl(teamName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
@@ -1159,6 +1439,27 @@ async function withTaskClaimLock<T>(
   cwd: string,
   fn: () => Promise<T>
 ): Promise<{ ok: true; value: T } | { ok: false }> {
+  if (isBridgeLocksEnabled()) {
+    try {
+      const bridge = getTeamStateBridge(cwd);
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      const ownerToken = bridge.acquireTaskClaimLock(context, taskId, LOCK_STALE_MS);
+      if (!ownerToken) return { ok: false };
+      try {
+        return { ok: true, value: await fn() };
+      } finally {
+        try {
+          bridge.releaseTaskClaimLock(context, taskId, ownerToken);
+        } catch {
+          // best-effort release
+        }
+      }
+    } catch (error) {
+      if (shouldPropagateBridgeLockError(error)) {
+        throw new Error(normalizeBridgeErrorMessage(error));
+      }
+    }
+  }
   return await withTaskClaimLockImpl(teamName, taskId, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
@@ -1168,6 +1469,30 @@ async function withMailboxLock<T>(
   cwd: string,
   fn: () => Promise<T>,
 ): Promise<T> {
+  if (isBridgeLocksEnabled()) {
+    try {
+      const root = teamDir(teamName, cwd);
+      if (!existsSync(root)) {
+        throw new Error(`Team ${teamName} not found`);
+      }
+      const bridge = getTeamStateBridge(cwd);
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      const ownerToken = bridge.acquireMailboxLock(context, workerName, LOCK_STALE_MS);
+      try {
+        return await fn();
+      } finally {
+        try {
+          bridge.releaseMailboxLock(context, workerName, ownerToken);
+        } catch {
+          // best-effort release
+        }
+      }
+    } catch (error) {
+      if (shouldPropagateBridgeLockError(error)) {
+        throw new Error(normalizeBridgeErrorMessage(error));
+      }
+    }
+  }
   return await withMailboxLockImpl(teamName, workerName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
@@ -1207,6 +1532,10 @@ export async function createTask(
 
 // Read a task (returns null on missing/malformed)
 export async function readTask(teamName: string, taskId: string, cwd: string): Promise<TeamTask | null> {
+  const bridged = await readBridgeTeamObject('ReadTeamTask', teamName, cwd, { task_id: taskId });
+  if (bridged !== undefined) {
+    return isTeamTask(bridged) ? normalizeTask(bridged as TeamTask) : null;
+  }
   try {
     const p = taskFilePath(teamName, taskId, cwd);
     if (!existsSync(p)) return null;
@@ -1256,6 +1585,19 @@ export async function updateTask(
 
 // List all tasks sorted by numeric ID
 export async function listTasks(teamName: string, cwd: string): Promise<TeamTask[]> {
+  if (isBridgeEnabled()) {
+    try {
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      return getTeamStateBridge(cwd)
+        .listTeamTasks(context)
+        .flatMap((entry) => {
+          const candidate = parseBridgeObject(entry)?.task ?? entry;
+          return isTeamTask(candidate) ? [normalizeTask(candidate as TeamTask)] : [];
+        });
+    } catch {
+      // fall through to TS reader
+    }
+  }
   return await listTasksImpl(teamName, cwd, {
     teamDir,
     isTeamTask,
@@ -1358,9 +1700,12 @@ export async function appendTeamEvent(teamName: string, event: Omit<TeamEvent, '
     team: teamName,
     created_at: new Date().toISOString(),
   } as TeamEvent;
-  const p = teamEventLogPath(teamName, cwd);
-  await mkdir(dirname(p), { recursive: true });
-  await appendFile(p, `${JSON.stringify(full)}\n`, 'utf8');
+  const bridged = await appendTeamEventViaBridge(teamName, full, cwd);
+  if (!bridged) {
+    const p = teamEventLogPath(teamName, cwd);
+    await mkdir(dirname(p), { recursive: true });
+    await appendFile(p, `${JSON.stringify(full)}\n`, 'utf8');
+  }
   return full;
 }
 
@@ -1593,6 +1938,34 @@ export async function writeTaskApproval(
   approval: TaskApprovalRecord,
   cwd: string
 ): Promise<void> {
+  let wroteWithBridge = false;
+  if (isBridgeEnabled()) {
+    try {
+      const context = getTeamStateBridgeContext(teamName, cwd);
+      getTeamStateBridge(cwd).writeTeamTaskApproval(
+        context,
+        approval.task_id,
+        JSON.stringify(approval, null, 2),
+      );
+      wroteWithBridge = true;
+    } catch {
+      wroteWithBridge = false;
+    }
+  }
+  if (wroteWithBridge) {
+    await appendTeamEvent(
+      teamName,
+      {
+        type: 'approval_decision',
+        worker: approval.reviewer,
+        task_id: approval.task_id,
+        message_id: null,
+        reason: `${approval.status}:${approval.decision_reason}`,
+      },
+      cwd,
+    );
+    return;
+  }
   await writeTaskApprovalImpl(approval, {
     teamName,
     cwd,
@@ -1607,6 +1980,10 @@ export async function readTaskApproval(
   taskId: string,
   cwd: string
 ): Promise<TaskApprovalRecord | null> {
+  const bridged = await readBridgeTeamObject('ReadTeamTaskApproval', teamName, cwd, { task_id: taskId });
+  if (bridged !== undefined) {
+    return parseTaskApprovalContent(JSON.stringify(bridged), taskId);
+  }
   return await readTaskApprovalImpl(taskId, {
     teamName,
     cwd,
@@ -1629,6 +2006,21 @@ export async function getTeamSummary(teamName: string, cwd: string): Promise<Tea
     monitorSnapshotPath,
     teamPhasePath,
     writeAtomic,
+    readSummarySnapshot: async (targetTeamName, targetCwd) => {
+      const bridged = await readBridgeTeamObject('ReadTeamSummarySnapshot', targetTeamName, targetCwd);
+      if (bridged !== undefined) return normalizeSummarySnapshotValue(bridged);
+      return await readSummarySnapshotImpl(targetTeamName, targetCwd, summarySnapshotPath);
+    },
+    writeSummarySnapshot: async (targetTeamName, snapshot, targetCwd) => {
+      const bridged = await writeBridgeTeamFile(
+        'WriteTeamSummarySnapshot',
+        targetTeamName,
+        targetCwd,
+        JSON.stringify(snapshot, null, 2),
+      );
+      if (bridged) return;
+      await writeSummarySnapshotImpl(targetTeamName, snapshot, targetCwd, summarySnapshotPath, writeAtomic);
+    },
   });
 }
 
@@ -1646,6 +2038,14 @@ export async function writeShutdownRequest(
   requestedBy: string,
   cwd: string,
 ): Promise<void> {
+  const bridged = await writeBridgeTeamFile(
+    'WriteTeamShutdownRequest',
+    teamName,
+    cwd,
+    JSON.stringify({ requested_at: new Date().toISOString(), requested_by: requestedBy }, null, 2),
+    { worker_name: workerName },
+  );
+  if (bridged) return;
   const p = join(workerDir(teamName, workerName, cwd), 'shutdown-request.json');
   await writeAtomic(p, JSON.stringify({ requested_at: new Date().toISOString(), requested_by: requestedBy }, null, 2));
 }
@@ -1656,6 +2056,18 @@ export async function readShutdownAck(
   cwd: string,
   minUpdatedAt?: string,
 ): Promise<ShutdownAck | null> {
+  const bridged = await readBridgeTeamObject('ReadTeamShutdownAck', teamName, cwd, { worker_name: workerName });
+  if (bridged !== undefined) {
+    if (bridged === null) return null;
+    const parsed = bridged as unknown as ShutdownAck;
+    if (parsed.status !== 'accept' && parsed.status !== 'reject') return null;
+    if (typeof minUpdatedAt === 'string' && minUpdatedAt.trim() !== '') {
+      const minTs = Date.parse(minUpdatedAt);
+      const ackTs = Date.parse(parsed.updated_at ?? '');
+      if (!Number.isFinite(minTs) || !Number.isFinite(ackTs) || ackTs < minTs) return null;
+    }
+    return parsed;
+  }
   const ackPath = join(workerDir(teamName, workerName, cwd), 'shutdown-ack.json');
   try {
     const raw = await readFile(ackPath, 'utf-8');
@@ -1726,6 +2138,10 @@ export async function readMonitorSnapshot(
   teamName: string,
   cwd: string,
 ): Promise<TeamMonitorSnapshotState | null> {
+  const bridged = await readBridgeTeamObject('ReadTeamMonitorSnapshot', teamName, cwd);
+  if (bridged !== undefined) {
+    return normalizeMonitorSnapshotValue(bridged);
+  }
   return await readMonitorSnapshotImpl(teamName, cwd, monitorSnapshotPath);
 }
 
@@ -1734,6 +2150,13 @@ export async function writeMonitorSnapshot(
   snapshot: TeamMonitorSnapshotState,
   cwd: string,
 ): Promise<void> {
+  const bridged = await writeBridgeTeamFile(
+    'WriteTeamMonitorSnapshot',
+    teamName,
+    cwd,
+    JSON.stringify(snapshot, null, 2),
+  );
+  if (bridged) return;
   await writeMonitorSnapshotImpl(teamName, snapshot, cwd, monitorSnapshotPath, writeAtomic);
 }
 
@@ -1741,6 +2164,10 @@ export async function readTeamPhase(
   teamName: string,
   cwd: string,
 ): Promise<TeamPhaseState | null> {
+  const bridged = await readBridgeTeamObject('ReadTeamPhase', teamName, cwd);
+  if (bridged !== undefined) {
+    return normalizeTeamPhaseValue(bridged);
+  }
   const phase = await readTeamPhaseImpl(teamName, cwd, teamPhasePath);
   return phase as TeamPhaseState | null;
 }
@@ -1750,6 +2177,13 @@ export async function writeTeamPhase(
   phaseState: TeamPhaseState,
   cwd: string,
 ): Promise<void> {
+  const bridged = await writeBridgeTeamFile(
+    'WriteTeamPhase',
+    teamName,
+    cwd,
+    JSON.stringify(phaseState, null, 2),
+  );
+  if (bridged) return;
   await writeTeamPhaseImpl(teamName, phaseState, cwd, teamPhasePath, writeAtomic);
 }
 

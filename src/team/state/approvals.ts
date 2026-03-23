@@ -44,16 +44,25 @@ export async function writeTaskApproval(approval: TaskApprovalRecord, deps: Appr
   );
 }
 
+export function parseTaskApprovalContent(raw: string | null, taskId: string): TaskApprovalRecord | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as TaskApprovalRecord;
+    if (parsed.task_id !== taskId) return null;
+    if (!['pending', 'approved', 'rejected'].includes(parsed.status)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export async function readTaskApproval(taskId: string, deps: ApprovalDeps): Promise<TaskApprovalRecord | null> {
   const p = deps.approvalPath(deps.teamName, taskId, deps.cwd);
   if (!existsSync(p)) return null;
 
   try {
     const raw = await readFile(p, 'utf-8');
-    const parsed = JSON.parse(raw) as TaskApprovalRecord;
-    if (parsed.task_id !== taskId) return null;
-    if (!['pending', 'approved', 'rejected'].includes(parsed.status)) return null;
-    return parsed;
+    return parseTaskApprovalContent(raw, taskId);
   } catch {
     return null;
   }

@@ -1,5 +1,8 @@
 use omx_mux::{canonical_contract_summary, MuxAdapter, MuxOperation, MuxTarget, TmuxAdapter};
-use omx_runtime_core::{runtime_contract_summary, RuntimeCommand, RuntimeEngine};
+use omx_runtime_core::{
+    execute_team_state_command, is_team_state_command, runtime_contract_summary, RuntimeCommand,
+    RuntimeEngine,
+};
 use std::env;
 use std::process;
 
@@ -71,28 +74,34 @@ fn run() -> Result<(), String> {
             let json_input = second.ok_or("exec requires a JSON command argument")?;
             let state_dir = args.iter().find_map(|a| a.strip_prefix("--state-dir="));
             let compact = args.iter().any(|a| a == "--compact");
-            let mut engine = match state_dir {
-                Some(dir) => RuntimeEngine::load(dir)
-                    .unwrap_or_else(|_| RuntimeEngine::new().with_state_dir(dir)),
-                None => RuntimeEngine::new(),
-            };
-
             let command: RuntimeCommand =
                 serde_json::from_str(json_input).map_err(|e| format!("invalid JSON: {e}"))?;
-            let event = engine.process(command).map_err(|e| e.to_string())?;
+            let payload: serde_json::Value = if is_team_state_command(&command) {
+                let event = execute_team_state_command(command).map_err(|e| e.to_string())?;
+                serde_json::to_value(event).map_err(|e| e.to_string())?
+            } else {
+                let mut engine = match state_dir {
+                    Some(dir) => RuntimeEngine::load(dir)
+                        .unwrap_or_else(|_| RuntimeEngine::new().with_state_dir(dir)),
+                    None => RuntimeEngine::new(),
+                };
+                let event = engine.process(command).map_err(|e| e.to_string())?;
 
-            if compact {
-                engine.compact();
-            }
+                if compact {
+                    engine.compact();
+                }
 
-            if state_dir.is_some() {
-                let _ = engine.persist();
-                let _ = engine.write_compatibility_view();
-            }
+                if state_dir.is_some() {
+                    let _ = engine.persist();
+                    let _ = engine.write_compatibility_view();
+                }
+
+                serde_json::to_value(event).map_err(|e| e.to_string())?
+            };
 
             println!(
                 "{}",
-                serde_json::to_string_pretty(&event).map_err(|e| e.to_string())?
+                serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
             );
             Ok(())
         }

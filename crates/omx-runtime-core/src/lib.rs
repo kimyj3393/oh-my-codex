@@ -7,12 +7,16 @@ pub mod dispatch;
 pub mod engine;
 pub mod mailbox;
 pub mod replay;
+pub mod team_state;
 
 pub use authority::{AuthorityError, AuthorityLease};
 pub use dispatch::{DispatchError, DispatchLog, DispatchRecord, DispatchStatus};
 pub use engine::{derive_readiness, EngineError, RuntimeEngine};
 pub use mailbox::{MailboxError, MailboxLog, MailboxRecord};
 pub use replay::ReplayState;
+pub use team_state::{
+    execute_event as execute_team_state_command, is_team_state_command, TeamStateError,
+};
 
 pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
@@ -27,6 +31,33 @@ pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "create-mailbox-message",
     "mark-mailbox-notified",
     "mark-mailbox-delivered",
+    "append-team-event",
+    "write-team-worker-identity",
+    "read-team-worker-heartbeat",
+    "update-team-worker-heartbeat",
+    "read-team-worker-status",
+    "write-team-worker-status",
+    "write-team-worker-inbox",
+    "write-team-shutdown-request",
+    "read-team-shutdown-ack",
+    "read-team-phase",
+    "write-team-phase",
+    "write-team-task-approval",
+    "read-team-task-approval",
+    "read-team-task",
+    "list-team-tasks",
+    "read-team-monitor-snapshot",
+    "write-team-monitor-snapshot",
+    "read-team-summary-snapshot",
+    "write-team-summary-snapshot",
+    "acquire-team-scaling-lock",
+    "release-team-scaling-lock",
+    "acquire-team-create-task-lock",
+    "release-team-create-task-lock",
+    "acquire-team-task-claim-lock",
+    "release-team-task-claim-lock",
+    "acquire-team-mailbox-lock",
+    "release-team-mailbox-lock",
 ];
 pub const RUNTIME_EVENT_NAMES: &[&str] = &[
     "authority-acquired",
@@ -40,6 +71,33 @@ pub const RUNTIME_EVENT_NAMES: &[&str] = &[
     "mailbox-message-created",
     "mailbox-notified",
     "mailbox-delivered",
+    "team-event-appended",
+    "team-worker-identity-written",
+    "team-worker-heartbeat-read",
+    "team-worker-heartbeat-updated",
+    "team-worker-status-read",
+    "team-worker-status-written",
+    "team-worker-inbox-written",
+    "team-shutdown-request-written",
+    "team-shutdown-ack-read",
+    "team-phase-read",
+    "team-phase-written",
+    "team-task-approval-written",
+    "team-task-approval-read",
+    "team-task-read",
+    "team-tasks-listed",
+    "team-monitor-snapshot-read",
+    "team-monitor-snapshot-written",
+    "team-summary-snapshot-read",
+    "team-summary-snapshot-written",
+    "team-scaling-lock-acquired",
+    "team-scaling-lock-released",
+    "team-create-task-lock-acquired",
+    "team-create-task-lock-released",
+    "team-task-claim-lock-acquire-result",
+    "team-task-claim-lock-released",
+    "team-mailbox-lock-acquired",
+    "team-mailbox-lock-released",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +290,147 @@ pub enum RuntimeCommand {
     MarkMailboxDelivered {
         message_id: String,
     },
+    AppendTeamEvent {
+        state_root: String,
+        team_name: String,
+        event_json: String,
+    },
+    WriteTeamWorkerIdentity {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        identity_json: String,
+    },
+    ReadTeamWorkerHeartbeat {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+    },
+    UpdateTeamWorkerHeartbeat {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        heartbeat_json: String,
+    },
+    ReadTeamWorkerStatus {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+    },
+    WriteTeamWorkerStatus {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        status_json: String,
+    },
+    WriteTeamWorkerInbox {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        prompt: String,
+    },
+    WriteTeamShutdownRequest {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        request_json: String,
+    },
+    ReadTeamShutdownAck {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+    },
+    ReadTeamPhase {
+        state_root: String,
+        team_name: String,
+    },
+    WriteTeamPhase {
+        state_root: String,
+        team_name: String,
+        phase_json: String,
+    },
+    WriteTeamTaskApproval {
+        state_root: String,
+        team_name: String,
+        task_id: String,
+        approval_json: String,
+    },
+    ReadTeamTaskApproval {
+        state_root: String,
+        team_name: String,
+        task_id: String,
+    },
+    ReadTeamTask {
+        state_root: String,
+        team_name: String,
+        task_id: String,
+    },
+    ListTeamTasks {
+        state_root: String,
+        team_name: String,
+    },
+    ReadTeamMonitorSnapshot {
+        state_root: String,
+        team_name: String,
+    },
+    WriteTeamMonitorSnapshot {
+        state_root: String,
+        team_name: String,
+        snapshot_json: String,
+    },
+    ReadTeamSummarySnapshot {
+        state_root: String,
+        team_name: String,
+    },
+    WriteTeamSummarySnapshot {
+        state_root: String,
+        team_name: String,
+        snapshot_json: String,
+    },
+    AcquireTeamScalingLock {
+        state_root: String,
+        team_name: String,
+        lock_stale_ms: u64,
+    },
+    ReleaseTeamScalingLock {
+        state_root: String,
+        team_name: String,
+        owner_token: String,
+    },
+    AcquireTeamCreateTaskLock {
+        state_root: String,
+        team_name: String,
+        lock_stale_ms: u64,
+    },
+    ReleaseTeamCreateTaskLock {
+        state_root: String,
+        team_name: String,
+        owner_token: String,
+    },
+    AcquireTeamTaskClaimLock {
+        state_root: String,
+        team_name: String,
+        task_id: String,
+        lock_stale_ms: u64,
+    },
+    ReleaseTeamTaskClaimLock {
+        state_root: String,
+        team_name: String,
+        task_id: String,
+        owner_token: String,
+    },
+    AcquireTeamMailboxLock {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        lock_stale_ms: u64,
+    },
+    ReleaseTeamMailboxLock {
+        state_root: String,
+        team_name: String,
+        worker_name: String,
+        owner_token: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +477,74 @@ pub enum RuntimeEvent {
     MailboxDelivered {
         message_id: String,
     },
+    TeamEventAppended,
+    TeamWorkerIdentityWritten,
+    TeamWorkerHeartbeatRead {
+        heartbeat: Option<serde_json::Value>,
+    },
+    TeamWorkerHeartbeatUpdated,
+    TeamWorkerStatusRead {
+        status: Option<serde_json::Value>,
+    },
+    TeamWorkerStatusWritten,
+    TeamWorkerInboxWritten,
+    TeamShutdownRequestWritten,
+    TeamShutdownAckRead {
+        ack: Option<serde_json::Value>,
+    },
+    TeamPhaseRead {
+        phase: Option<serde_json::Value>,
+    },
+    TeamPhaseWritten,
+    TeamTaskApprovalWritten,
+    TeamTaskApprovalRead {
+        approval: Option<serde_json::Value>,
+    },
+    TeamTaskRead {
+        task: Option<serde_json::Value>,
+    },
+    TeamTasksListed {
+        tasks: Vec<serde_json::Value>,
+    },
+    TeamMonitorSnapshotRead {
+        snapshot: Option<serde_json::Value>,
+    },
+    TeamMonitorSnapshotWritten,
+    TeamSummarySnapshotRead {
+        snapshot: Option<serde_json::Value>,
+    },
+    TeamSummarySnapshotWritten,
+    TeamScalingLockAcquired {
+        owner_token: String,
+    },
+    TeamScalingLockReleased {
+        released: bool,
+    },
+    TeamCreateTaskLockAcquired {
+        owner_token: String,
+    },
+    TeamCreateTaskLockReleased {
+        released: bool,
+    },
+    TeamTaskClaimLockAcquireResult {
+        ok: bool,
+        owner_token: Option<String>,
+    },
+    TeamTaskClaimLockReleased {
+        released: bool,
+    },
+    TeamMailboxLockAcquired {
+        owner_token: String,
+    },
+    TeamMailboxLockReleased {
+        released: bool,
+    },
+}
+
+impl RuntimeCommand {
+    pub fn is_team_state_command(&self) -> bool {
+        team_state::is_team_state_command(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

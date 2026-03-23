@@ -26,7 +26,7 @@ export interface TeamSummaryPerformance {
   worker_count: number;
 }
 
-interface TeamSummarySnapshot {
+export interface TeamSummarySnapshot {
   workerTurnCountByName: Record<string, number>;
   workerTaskByName: Record<string, string>;
 }
@@ -87,19 +87,107 @@ interface MonitorDeps {
   monitorSnapshotPath: (teamName: string, cwd: string) => string;
   teamPhasePath: (teamName: string, cwd: string) => string;
   writeAtomic: (filePath: string, data: string) => Promise<void>;
+  readSummarySnapshot?: (teamName: string, cwd: string) => Promise<TeamSummarySnapshot | null>;
+  writeSummarySnapshot?: (teamName: string, snapshot: TeamSummarySnapshot, cwd: string) => Promise<void>;
+}
+
+export function normalizeSummarySnapshotValue(value: unknown): TeamSummarySnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const parsed = value as Partial<TeamSummarySnapshot>;
+  return {
+    workerTurnCountByName: parsed.workerTurnCountByName ?? {},
+    workerTaskByName: parsed.workerTaskByName ?? {},
+  };
+}
+
+export function parseSummarySnapshotContent(raw: string | null): TeamSummarySnapshot | null {
+  if (raw === null) return null;
+  try {
+    return normalizeSummarySnapshotValue(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+export function serializeSummarySnapshot(snapshot: TeamSummarySnapshot): string {
+  return JSON.stringify(snapshot, null, 2);
+}
+
+export function normalizeMonitorSnapshotValue(value: unknown): TeamMonitorSnapshotState | null {
+  if (!value || typeof value !== 'object') return null;
+  const parsed = value as Partial<TeamMonitorSnapshotState>;
+  const monitorTimings = (() => {
+    const candidate = parsed.monitorTimings as TeamMonitorSnapshotState['monitorTimings'];
+    if (!candidate || typeof candidate !== 'object') return undefined;
+    if (
+      typeof candidate.list_tasks_ms !== 'number' ||
+      typeof candidate.worker_scan_ms !== 'number' ||
+      typeof candidate.mailbox_delivery_ms !== 'number' ||
+      typeof candidate.total_ms !== 'number' ||
+      typeof candidate.updated_at !== 'string'
+    ) {
+      return undefined;
+    }
+    return candidate;
+  })();
+
+  return {
+    taskStatusById: parsed.taskStatusById ?? {},
+    workerAliveByName: parsed.workerAliveByName ?? {},
+    workerStateByName: parsed.workerStateByName ?? {},
+    workerTurnCountByName: parsed.workerTurnCountByName ?? {},
+    workerTaskIdByName: parsed.workerTaskIdByName ?? {},
+    mailboxNotifiedByMessageId: parsed.mailboxNotifiedByMessageId ?? {},
+    completedEventTaskIds: parsed.completedEventTaskIds ?? {},
+    integrationByWorker: parsed.integrationByWorker ?? {},
+    monitorTimings,
+  };
+}
+
+export function parseMonitorSnapshotContent(raw: string | null): TeamMonitorSnapshotState | null {
+  if (raw === null) return null;
+  try {
+    return normalizeMonitorSnapshotValue(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+export function serializeMonitorSnapshot(snapshot: TeamMonitorSnapshotState): string {
+  return JSON.stringify(snapshot, null, 2);
+}
+
+export function normalizeTeamPhaseValue(value: unknown): TeamPhaseState | null {
+  if (!value || typeof value !== 'object') return null;
+  const parsed = value as Partial<TeamPhaseState>;
+  const currentPhase = typeof parsed.current_phase === 'string' ? parsed.current_phase : 'team-exec';
+  return {
+    current_phase: currentPhase,
+    max_fix_attempts: typeof parsed.max_fix_attempts === 'number' ? parsed.max_fix_attempts : 3,
+    current_fix_attempt: typeof parsed.current_fix_attempt === 'number' ? parsed.current_fix_attempt : 0,
+    transitions: Array.isArray(parsed.transitions) ? parsed.transitions : [],
+    updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : new Date().toISOString(),
+  };
+}
+
+export function parseTeamPhaseContent(raw: string | null): TeamPhaseState | null {
+  if (raw === null) return null;
+  try {
+    return normalizeTeamPhaseValue(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+export function serializeTeamPhaseContent(phaseState: TeamPhaseState): string {
+  return JSON.stringify(phaseState, null, 2);
 }
 
 export async function readSummarySnapshot(teamName: string, cwd: string, summarySnapshotPath: MonitorDeps['summarySnapshotPath']): Promise<TeamSummarySnapshot | null> {
   const p = summarySnapshotPath(teamName, cwd);
   if (!existsSync(p)) return null;
   try {
-    const raw = await readFile(p, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<TeamSummarySnapshot>;
-    if (!parsed || typeof parsed !== 'object') return null;
-    return {
-      workerTurnCountByName: parsed.workerTurnCountByName ?? {},
-      workerTaskByName: parsed.workerTaskByName ?? {},
-    };
+    return parseSummarySnapshotContent(await readFile(p, 'utf8'));
   } catch {
     return null;
   }
@@ -112,7 +200,7 @@ export async function writeSummarySnapshot(
   summarySnapshotPath: MonitorDeps['summarySnapshotPath'],
   writeAtomic: MonitorDeps['writeAtomic'],
 ): Promise<void> {
-  await writeAtomic(summarySnapshotPath(teamName, cwd), JSON.stringify(snapshot, null, 2));
+  await writeAtomic(summarySnapshotPath(teamName, cwd), serializeSummarySnapshot(snapshot));
 }
 
 export async function getTeamSummary(deps: MonitorDeps): Promise<TeamSummary | null> {
@@ -124,7 +212,9 @@ export async function getTeamSummary(deps: MonitorDeps): Promise<TeamSummary | n
   const tasks = await deps.listTasks(deps.teamName, deps.cwd);
   const tasksLoadedMs = performance.now() - tasksStartMs;
   const taskById = new Map(tasks.map((task) => [task.id, task] as const));
-  const previousSnapshot = await readSummarySnapshot(deps.teamName, deps.cwd, deps.summarySnapshotPath);
+  const previousSnapshot = deps.readSummarySnapshot
+    ? await deps.readSummarySnapshot(deps.teamName, deps.cwd)
+    : await readSummarySnapshot(deps.teamName, deps.cwd, deps.summarySnapshotPath);
 
   const counts = { total: tasks.length, pending: 0, blocked: 0, in_progress: 0, completed: 0, failed: 0 };
   for (const t of tasks) {
@@ -179,7 +269,11 @@ export async function getTeamSummary(deps: MonitorDeps): Promise<TeamSummary | n
     nextSnapshot.workerTaskByName[worker.name] = currentTaskId;
   }
 
-  await writeSummarySnapshot(deps.teamName, nextSnapshot, deps.cwd, deps.summarySnapshotPath, deps.writeAtomic);
+  if (deps.writeSummarySnapshot) {
+    await deps.writeSummarySnapshot(deps.teamName, nextSnapshot, deps.cwd);
+  } else {
+    await writeSummarySnapshot(deps.teamName, nextSnapshot, deps.cwd, deps.summarySnapshotPath, deps.writeAtomic);
+  }
 
   return {
     teamName: cfg.name,
@@ -206,35 +300,7 @@ export async function readMonitorSnapshot(
   if (!existsSync(p)) return null;
 
   try {
-    const raw = await readFile(p, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<TeamMonitorSnapshotState>;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const monitorTimings = (() => {
-      const candidate = parsed.monitorTimings as TeamMonitorSnapshotState['monitorTimings'];
-      if (!candidate || typeof candidate !== 'object') return undefined;
-      if (
-        typeof candidate.list_tasks_ms !== 'number' ||
-        typeof candidate.worker_scan_ms !== 'number' ||
-        typeof candidate.mailbox_delivery_ms !== 'number' ||
-        typeof candidate.total_ms !== 'number' ||
-        typeof candidate.updated_at !== 'string'
-      ) {
-        return undefined;
-      }
-      return candidate;
-    })();
-
-    return {
-      taskStatusById: parsed.taskStatusById ?? {},
-      workerAliveByName: parsed.workerAliveByName ?? {},
-      workerStateByName: parsed.workerStateByName ?? {},
-      workerTurnCountByName: parsed.workerTurnCountByName ?? {},
-      workerTaskIdByName: parsed.workerTaskIdByName ?? {},
-      mailboxNotifiedByMessageId: parsed.mailboxNotifiedByMessageId ?? {},
-      completedEventTaskIds: parsed.completedEventTaskIds ?? {},
-      integrationByWorker: parsed.integrationByWorker ?? {},
-      monitorTimings,
-    };
+    return parseMonitorSnapshotContent(await readFile(p, 'utf-8'));
   } catch {
     return null;
   }
@@ -247,7 +313,7 @@ export async function writeMonitorSnapshot(
   monitorSnapshotPath: MonitorDeps['monitorSnapshotPath'],
   writeAtomic: MonitorDeps['writeAtomic'],
 ): Promise<void> {
-  await writeAtomic(monitorSnapshotPath(teamName, cwd), JSON.stringify(snapshot, null, 2));
+  await writeAtomic(monitorSnapshotPath(teamName, cwd), serializeMonitorSnapshot(snapshot));
 }
 
 export async function readTeamPhase(teamName: string, cwd: string, teamPhasePath: MonitorDeps['teamPhasePath']): Promise<TeamPhaseState | null> {
@@ -255,17 +321,7 @@ export async function readTeamPhase(teamName: string, cwd: string, teamPhasePath
   if (!existsSync(p)) return null;
 
   try {
-    const raw = await readFile(p, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<TeamPhaseState>;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const currentPhase = typeof parsed.current_phase === 'string' ? parsed.current_phase : 'team-exec';
-    return {
-      current_phase: currentPhase,
-      max_fix_attempts: typeof parsed.max_fix_attempts === 'number' ? parsed.max_fix_attempts : 3,
-      current_fix_attempt: typeof parsed.current_fix_attempt === 'number' ? parsed.current_fix_attempt : 0,
-      transitions: Array.isArray(parsed.transitions) ? parsed.transitions : [],
-      updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : new Date().toISOString(),
-    };
+    return parseTeamPhaseContent(await readFile(p, 'utf-8'));
   } catch {
     return null;
   }
@@ -278,5 +334,5 @@ export async function writeTeamPhase(
   teamPhasePath: MonitorDeps['teamPhasePath'],
   writeAtomic: MonitorDeps['writeAtomic'],
 ): Promise<void> {
-  await writeAtomic(teamPhasePath(teamName, cwd), JSON.stringify(phaseState, null, 2));
+  await writeAtomic(teamPhasePath(teamName, cwd), serializeTeamPhaseContent(phaseState));
 }
