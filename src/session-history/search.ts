@@ -1,8 +1,9 @@
-import { createReadStream, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createReadStream, existsSync, realpathSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { codexHome } from '../utils/paths.js';
+import { codexHome, packageRoot } from '../utils/paths.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -53,6 +54,88 @@ const DEFAULT_CONTEXT = 80;
 const MAX_LIMIT = 100;
 const MAX_CONTEXT = 400;
 const DURATION_RE = /^(\d+)([smhdw])$/i;
+export const SESSION_SEARCH_BINARY_ENV = 'OMX_SESSION_SEARCH_BINARY';
+export const SESSION_SEARCH_FORCE_TS_ENV = 'OMX_SESSION_SEARCH_FORCE_TS';
+
+function sessionSearchBinaryName(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'omx-session-search.exe' : 'omx-session-search';
+}
+
+export function resolveSessionSearchBinaryPath(
+  options: {
+    cwd?: string;
+    packageRootDir?: string;
+    exists?: (path: string) => boolean;
+    env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+  } = {},
+): string | null {
+  const {
+    cwd = process.cwd(),
+    packageRootDir = packageRoot(),
+    exists = existsSync,
+    env = process.env,
+    platform = process.platform,
+  } = options;
+
+  const override = env[SESSION_SEARCH_BINARY_ENV]?.trim();
+  if (override) {
+    return isAbsolute(override) ? override : resolve(cwd, override);
+  }
+
+  const binaryName = sessionSearchBinaryName(platform);
+  const candidates = [
+    join(packageRootDir, 'target', 'debug', binaryName),
+    join(packageRootDir, 'target', 'release', binaryName),
+  ];
+
+  for (const candidate of candidates) {
+    if (exists(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+function maybeSearchSessionHistoryNative(options: Required<Pick<SessionSearchOptions, 'query' | 'cwd' | 'now' | 'codexHomeDir'>> & SessionSearchOptions): SessionSearchReport | null {
+  if (process.env[SESSION_SEARCH_FORCE_TS_ENV] === '1') return null;
+
+  const binaryPath = resolveSessionSearchBinaryPath({
+    cwd: options.cwd,
+    env: process.env,
+  });
+  if (!binaryPath) return null;
+
+  const payload = JSON.stringify({
+    query: options.query,
+    limit: options.limit,
+    session: options.session,
+    since: options.since,
+    project: options.project,
+    context: options.context,
+    caseSensitive: options.caseSensitive === true,
+    cwd: options.cwd,
+    now: options.now,
+    codexHomeDir: options.codexHomeDir,
+  });
+
+  try {
+    const stdout = execFileSync(binaryPath, ['--input', payload], {
+      cwd: options.cwd,
+      encoding: 'utf-8',
+      env: process.env,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return JSON.parse(stdout) as SessionSearchReport;
+  } catch (error) {
+    const execError = error as { stderr?: string | Buffer; message?: string };
+    const stderr = typeof execError.stderr === 'string'
+      ? execError.stderr.trim()
+      : Buffer.isBuffer(execError.stderr)
+        ? execError.stderr.toString('utf-8').trim()
+        : '';
+    throw new Error(stderr ? `omx-session-search failed: ${stderr}` : `omx-session-search failed: ${execError.message ?? 'unknown error'}`);
+  }
+}
 
 function clampInteger(value: number, fallback: number, max: number): number {
   if (!Number.isInteger(value) || value < 0) return fallback;
@@ -250,8 +333,31 @@ function buildSnippet(text: string, query: string, context: number, caseSensitiv
 function matchesFilter(value: string | null, filter: string | undefined, caseSensitive: boolean): boolean {
   if (!filter) return true;
   if (!value) return false;
-  if (caseSensitive) return value.includes(filter);
-  return value.toLowerCase().includes(filter.toLowerCase());
+  const matches = caseSensitive
+    ? value.includes(filter)
+    : value.toLowerCase().includes(filter.toLowerCase());
+  if (matches) return true;
+
+  if (looksLikeAbsolutePath(value) && looksLikeAbsolutePath(filter)) {
+    const normalizedValue = normalizeComparablePath(value);
+    const normalizedFilter = normalizeComparablePath(filter);
+    if (caseSensitive) return normalizedValue.includes(normalizedFilter);
+    return normalizedValue.toLowerCase().includes(normalizedFilter.toLowerCase());
+  }
+
+  return false;
+}
+
+function looksLikeAbsolutePath(value: string): boolean {
+  return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function normalizeComparablePath(value: string): string {
+  try {
+    return realpathSync.native(value);
+  } catch {
+    return resolve(value);
+  }
 }
 
 async function searchRolloutFile(
@@ -323,7 +429,7 @@ async function searchRolloutFile(
   return skipFile ? { meta, results: [] } : { meta, results };
 }
 
-export async function searchSessionHistory(options: SessionSearchOptions): Promise<SessionSearchReport> {
+async function searchSessionHistoryFallback(options: SessionSearchOptions): Promise<SessionSearchReport> {
   const query = options.query.trim();
   if (query === '') {
     throw new Error('Search query must not be empty.');
@@ -378,4 +484,26 @@ export async function searchSessionHistory(options: SessionSearchOptions): Promi
     matched_sessions: matchedSessions.size,
     results,
   };
+}
+
+export async function searchSessionHistory(options: SessionSearchOptions): Promise<SessionSearchReport> {
+  const query = options.query.trim();
+  if (query === '') {
+    throw new Error('Search query must not be empty.');
+  }
+
+  const normalizedOptions: SessionSearchOptions & Required<Pick<SessionSearchOptions, 'cwd' | 'now' | 'codexHomeDir'>> = {
+    ...options,
+    query,
+    cwd: options.cwd ?? process.cwd(),
+    now: options.now ?? Date.now(),
+    codexHomeDir: options.codexHomeDir ?? codexHome(),
+  };
+
+  const nativeReport = maybeSearchSessionHistoryNative(normalizedOptions);
+  if (nativeReport) {
+    return nativeReport;
+  }
+
+  return searchSessionHistoryFallback(normalizedOptions);
 }

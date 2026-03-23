@@ -4,6 +4,7 @@ members = [
   "crates/omx-mux",
   "crates/omx-runtime-core",
   "crates/omx-runtime",
+  "crates/omx-session-search",
   "crates/omx-sparkshell",
 ]
 resolver = "2"
