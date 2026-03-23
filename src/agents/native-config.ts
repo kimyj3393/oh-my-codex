@@ -8,7 +8,6 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
 import {
-  DEFAULT_FRONTIER_MODEL,
   getEnvConfiguredStandardDefaultModel,
   getMainDefaultModel,
   getSparkDefaultModel,
@@ -141,14 +140,12 @@ function resolveFrontierModel(options: AgentModelResolutionOptions): string {
 }
 
 function resolveStandardModel(options: AgentModelResolutionOptions): string {
-  const frontierModel = resolveFrontierModel(options);
   const explicitStandardModel = getEnvConfiguredStandardDefaultModel(
     options.env ?? process.env,
     options.codexHomeOverride,
   );
 
   if (explicitStandardModel) return explicitStandardModel;
-  if (frontierModel !== DEFAULT_FRONTIER_MODEL) return frontierModel;
   return getStandardDefaultModel(options.codexHomeOverride);
 }
 
@@ -156,6 +153,10 @@ function resolveAgentModel(
   agent: AgentDefinition,
   options: AgentModelResolutionOptions = {},
 ): string {
+  if (agent.name === "executor") {
+    return resolveFrontierModel(options);
+  }
+
   switch (agent.modelClass) {
     case "frontier":
       return resolveFrontierModel(options);
